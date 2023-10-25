@@ -1,0 +1,428 @@
+---
+title: "CDISC Pilot"
+format: dashboard
+---
+
+```{r}
+#| label: set-up
+
+# Load Packages
+library(haven) 
+library(dplyr)
+library(ggplot2)
+library(visR)
+library(plotly)
+library(rtables)
+library(tidyr)
+library(dplyr)
+library(Tplyr)
+library(pharmaRTF)
+library(stringr)
+library(r2rtf)
+library(reactable)
+library(reactablefmtr)
+library(htmltools)
+
+# Source helper functions
+source("helpers.R")
+```
+
+```{r}
+#| label: read-data
+
+adsl <- read_xpt("adsl.xpt")
+adtte <- read_xpt("adtte.xpt")
+adas <- read_xpt("adadas.xpt")
+adlb <- read_xpt("adlbc.xpt")
+adsl_labels <- var_labels(adsl)
+```
+
+```{r}
+#| label: data-preparation
+
+# For KM plot
+anl <- adsl|> 
+  dplyr::filter(
+    SAFFL == "Y",
+    STUDYID == "CDISCPILOT01"
+  ) |> 
+  dplyr::select(STUDYID, USUBJID, TRT01A) |> 
+  dplyr::inner_join(
+    filter(
+      adtte, PARAMCD == "TTDE", STUDYID == "CDISCPILOT01"
+    ) |> select(STUDYID, USUBJID, AVAL, CNSR, PARAM, PARAMCD),
+    by = c("STUDYID", "USUBJID")
+  ) |> 
+  dplyr::mutate(
+    TRT01A = factor(TRT01A, levels = c("Placebo", "Xanomeline Low Dose",  "Xanomeline High Dose"))
+  )
+
+
+# For demographic tables
+adsl_prep <- adsl |> 
+  dplyr::filter(
+    STUDYID == "CDISCPILOT01",
+    ITTFL == "Y"
+  ) |> 
+  dplyr::mutate(
+    TRT01P = factor(TRT01P, levels = c("Placebo", "Xanomeline Low Dose",  "Xanomeline High Dose")),
+    AGEGR1 = factor(AGEGR1, levels = c("<65", "65-80", ">80")),
+    RACE = factor(RACE, levels = c("WHITE", "BLACK OR AFRICAN AMERICAN", "AMERICAN INDIAN OR ALASKA NATIVE"))
+  ) 
+
+
+# For Primary Table
+adas <- adas |>
+  filter(
+    EFFFL == "Y",
+    ITTFL=='Y',
+    PARAMCD == 'ACTOT',
+    ANL01FL == 'Y'
+  )
+```
+
+## Kaplan-Meier Plot
+
+```{r}
+#| label: km-plot
+#| title: "KM plot for Time to First Dermatologic Event: Safety population"
+
+# estimate survival
+surv_mod <- visR::estimate_KM(data = anl, strata = "TRT01A")
+
+# Plot
+ggplot2::theme_set(theme_bw())
+
+KM <- visR::visr(surv_mod,
+           y_label = "Probability of event\n",
+           x_label = "Time to First Dermatologic Event (Days)",
+           y_ticks = seq(0,1,0.10)) |> 
+    add_CNSR() |> 
+    add_CI()
+
+KM <- KM + 
+  ggplot2::geom_hline(yintercept=0.5, linetype = "dashed")
+
+ggplotly(KM)
+```
+
+## Row {.tabset}
+
+::: {.card title="About"}
+
+<h2>Introduction</h2>
+
+This Quarto Dashboard is modeled from the R Consortium's pilot submissions to the FDA, including:
+
+-   [Pilot 1](https://github.com/RConsortium/submissions-pilot1/tree/main) - test submission of an R-language based package that can meet the needs and the expectations of the FDA reviewers, including assessing code review and analyses reproducibility.
+
+-   [Pilot 2](https://github.com/RConsortium/submissions-pilot2/tree/main) - test the concept that a Shiny application created with the R-language can be successfully bundled into a submission package and transferred successfully to FDA reviewers.
+
+Data originates from the [CDISC's sdtm-adam-pilot-project](https://github.com/cdisc-org/sdtm-adam-pilot-project).
+
+<h2>Components</h2>
+
+<h3>KM-Plot for TTDE</h3>
+**Shown above** A Kaplan-Meier (KM) plot of the Time to First Dermatologic Event (TTDE) with strata defined by treatment group is displayed along with an informative risk set table across time.
+
+<h3>Demographic Table</h3>
+In this interface, summary statistics associated with baseline clinical characteristics and other demographic factors is shown.
+
+
+<h3>Primary Table</h3>
+A summary table of the primary efficacy analysis is shown for each of the time points of assessment (baseline and week 24) comparing each treatment group. The primary efficacy variable (change from baseline in ADAS Cog (11)) was analyzed using an Analysis of Covariance (ANCOVA) model with treatment and baseline value as covariates, comparing Placebo to Xanomeline High Dose.
+
+<h3>Efficacy Table</h3>
+A summary table of an additional efficacy analysis is shown for baseline and week 20. The efficacy variable (Glucose) was analzying using ANCOVA model with treatment and baseline value as covariates, comparing Placebo to Xanomeline High Dose.
+
+<h3>Visit Completion Table</h3>
+A summary table of the number of patients remaining in the treatment period for each scheduled visit from baseline to week 24.
+:::
+
+```{r}
+#| title: Demographic Table
+
+# Table layout
+vars <- c("AGE", "AGEGR1", "RACE", "HEIGHTBL", "WEIGHTBL", "BMIBL", "MMSETOT")
+lyt <- basic_table(title = "Protocol: CDISCPILOT01",
+                   subtitles = "Population: Intent-to-Treat",
+                   main_footer = paste0("Program: tlf_demographic.Rmd \n" , Sys.time())
+) |> 
+  split_cols_by("TRT01P") |>
+  add_colcounts() |>
+  analyze(vars, function(x, ...) {
+    if (is.numeric(x)) {
+      in_rows(
+        "Mean (sd)" = c(mean(x), sd(x)),
+        "Median" = median(x),
+        "Min - Max" = range(x),
+        .formats = c("xx.xx (xx.xx)", "xx.xx", "xx.xx - xx.xx")
+      )
+    } else if (is.factor(x) || is.character(x)) {
+      in_rows(.list = list_wrap_x(table)(x))
+    } else {
+      stop("type not supproted")
+    }
+  },
+  var_labels = adsl_labels[vars])
+
+# Table build
+tbl <- build_table(lyt, adsl_prep)
+
+as_html(tbl)
+```
+
+```{r}
+#| title: Primary Table
+
+# Descriptive Statistics of Endpoint Variable
+t <- tplyr_table(adas, TRTP) |> 
+  set_pop_data(adsl) |> 
+  set_pop_treat_var(TRT01P) |> 
+  set_pop_where(EFFFL == "Y" & ITTFL == "Y") |> 
+  set_distinct_by(USUBJID) |> 
+  set_desc_layer_formats(
+    'n' = f_str('xx', n),
+    'Mean (SD)' = f_str('xx.x (xx.xx)', mean, sd),
+    'Median (Range)' = f_str('xx.x (xxx;xx)', median, min, max)
+  ) |> 
+  add_layer(
+    group_desc(AVAL, where= AVISITN ==  0, by = "Baseline")
+  ) |> 
+  add_layer(
+    group_desc(AVAL, where= AVISITN == 24, by = "Week 24")
+  ) |> 
+  add_layer(
+    group_desc(CHG,  where= AVISITN == 24, by = "Change from Baseline")
+  )
+
+
+sum_data <- t |>
+      build() |>
+      nest_rowlabels() |>
+      dplyr::select(-starts_with('ord')) |>
+      add_column_headers(
+        paste0("|Placebo</br>(N=**Placebo**)| Xanomeline High Dose</br>(N=**Xanomeline High Dose**) ",
+               "| Xanomeline Low Dose</br>(N=**Xanomeline Low Dose**)"),
+        header_n(t)
+      )
+
+# Statistical Summaries 
+
+model_portion <- efficacy_models(adas, var = 'CHG', wk = 24, show_pvalue = TRUE)
+
+
+# Style the table
+
+final <- bind_rows(sum_data, model_portion)
+
+ht <- huxtable::as_hux(final, add_colnames = FALSE) |>
+  huxtable::set_bold(1, 1:ncol(final), TRUE) |>
+  huxtable::set_align(1, 1:ncol(final), 'center') |>
+  huxtable::set_valign(1, 1:ncol(final), 'bottom') |>
+  huxtable::set_bottom_border(1, 1:ncol(final), 1) |>
+  huxtable::set_width(1) |>
+  huxtable::set_escape_contents(FALSE) |>
+  huxtable::set_col_width(c(.5, 1 / 6, 1 / 6, 1 / 6)) |> 
+  huxtable::add_footnote("Statistical model and comparison p-values removed when applying data filters. Refer to the application information for additional details.") |> 
+  huxtable::add_footnote("[1] Based on Analysis of covariance (ANCOVA) model with treatment and site group as factors and baseline value as a covariate.") |> 
+  huxtable::add_footnote("[2] Test for a non-zero coefficient for treatment (dose) as a continuous variable.") |> 
+  huxtable::add_footnote("[3] Pairwise comparison with treatment as a categorical variable: p-values without adjustment for multiple comparisons.")
+
+
+htmltools::HTML(huxtable::to_html(ht))
+```
+
+```{r}
+#| title: Efficacy Table
+
+itt <- adsl |>
+      filter(ITTFL == "Y") |>
+      select("STUDYID", "USUBJID")
+
+# prepare labs data for pairwise comparison
+adlb1 <- adlb |>
+  right_join(itt, by = c("STUDYID", "USUBJID")) |>
+  filter(TRTPN %in% c(0, 81), PARAMCD == "GLUC", !is.na(AVISITN)) |>
+  mutate(TRTPN = ifelse(TRTPN == 0, 99, TRTPN)) 
+
+gluc_lmfit <- adlb1 |>
+  filter(AVISITN == 20) |>
+  lm(CHG ~ BASE + TRTPN, data = .)
+
+t10 <- adlb1 |>
+  filter(AVISITN == 0) |>
+  group_by(TRTPN, TRTP) |>
+  summarise(
+    N = n(),
+    mean_bl = mean(BASE),
+    sd_bl = sd(BASE)
+  )
+
+## Raw summary statistics
+t11 <- adlb1 |>
+  filter(AVISITN == 20, !is.na(CHG), !is.na(BASE)) |>
+  group_by(TRTPN, TRTP) |>
+  summarise(
+    N_20 = n(),
+    mean_chg = mean(CHG),
+    sd_chg = sd(CHG),
+    mean = mean(AVAL),
+    sd = sd(AVAL)
+  )
+
+## Calculate LS mean
+t12 <- emmeans::emmeans(gluc_lmfit, "TRTPN")
+
+## Merge and format data for reporting
+apr0ancova1 <- merge(t10, t11) |>
+  merge(t12) |>
+  mutate(emmean_sd = SE * sqrt(df)) |>
+  mutate(
+    Trt = c("Xanomeline High Dose", "Placebo"),
+    N1 = N,
+    Mean1 = fmt_est(mean_bl, sd_bl),
+    N2 = N_20,
+    Mean2 = fmt_est(mean, sd),
+    N3 = N_20,
+    Mean3 = fmt_est(mean_chg, sd_chg),
+    CI = fmt_ci(emmean, lower.CL, upper.CL)
+  ) |>
+  select(Trt:CI)
+
+t2 <- data.frame(pairs(t12))
+    
+## Treatment Comparison
+apr0ancova2 <- t2 |>
+  mutate(
+    lower = estimate - 1.96 * SE,
+    upper = estimate + 1.96 * SE
+  ) |>
+  mutate(
+    comp = "Study Drug vs. Placebo",
+    mean = fmt_ci(estimate, lower, upper),
+    p = fmt_pval(p.value)
+  ) |>
+  select(comp:p)
+
+### Calculate root mean square and save data in output folder
+apr0ancova3 <- data.frame(rmse = paste0(
+  "Root Mean Squared Error of Change = ",
+  formatC(sqrt(mean((gluc_lmfit$residuals)^2)), digits = 2, format = "f", flag = "0")
+))
+
+efficacy_results <- list(
+  apr0ancova1 = apr0ancova1,
+  apr0ancova2 = apr0ancova2,
+  apr0ancova3 = apr0ancova3
+)
+
+apr0ancova1 <- efficacy_results$apr0ancova1
+
+coln =c("Treatment",
+        "N","Mean (SD)",
+        "N","Mean (SD)",
+        "N","Mean (SD)","LS Mean (95% CI)")
+colgr=c(1,2,2,3,3,4,4,4)
+colwidths <- c(rep(100, 7), 150)
+colgrn=c("","Baseline","Week 20","Change from Baseline")
+collist = purrr::map2(1:ncol(apr0ancova1), colwidths, ~{
+  colDef(name = coln[.x], minWidth = .y)
+})
+names(collist) = names(apr0ancova1)
+reactable(
+  apr0ancova1,
+  columns = collist,
+  columnGroups = list(
+    colGroup(name = colgrn[2], columns = names(apr0ancova1)[colgr==2]),
+    colGroup(name = colgrn[3], columns = names(apr0ancova1)[colgr==3]),
+    colGroup(name = colgrn[4], columns = names(apr0ancova1)[colgr==4]))) |> 
+  add_title("Primary Endpoint Analysis: Glucose (mmol/L) - Summary at Week 20 LOCF",
+            font_size = 18)
+
+apr0ancova2 <- efficacy_results$apr0ancova2
+apr0ancova3 <- efficacy_results$apr0ancova3
+coln =c("",
+        "Difference in LS Mean (95% CI)",
+        "p-Value")
+collist = lapply(1:ncol(apr0ancova2),function(xx){
+  if(xx>1){colDef(name=coln[xx])
+  }else{colDef(name=coln[xx],footer=apr0ancova3$rmse)}
+})
+names(collist) = names(apr0ancova2)
+
+reactable(
+  apr0ancova2,
+  columns = collist,
+  defaultColDef = colDef(footerStyle = list(fontStyle = "italic"))) |>
+  add_title("Pairwise Comparison",
+            font_size = 18)
+
+HTML("Abbreviations: CI=Confidence Interval; LS=Least Squares; SD=Standard Deviation<br>Table is based on participants who had observable data at Baseline and Week 20<br>Based on an Analysis of Covariance (ANCOVA) model with treatment and baseline value as covariates")
+```
+
+```{r}
+#| title: Visit Completion Table
+
+# use adlbc data set to remain consistent with efficacy table input data
+visit_df <- adlb |>
+  filter(PARAMCD == "GLUC") |> 
+  filter(AVISITN != 98) |>
+  filter(!is.na(AVISITN)) |>
+  select(USUBJID, AVISITN) |>
+  distinct() |>
+  left_join(
+    select(adsl, USUBJID, TRT01P),
+    by = "USUBJID"
+  )
+
+# visit number and week lookup
+v_week_df <- tibble::tibble(
+  AVISITN = c(0, 2, 4, 6, 8, 12, 16, 20, 24, 26, 99),
+  VISIT = c("Baseline ", paste("Week", c(2, 4, 6, 8, 12, 16, 20, 24, 26)), "End of Treatment")
+) |>
+  mutate(VISIT = factor(VISIT, levels = c("Baseline ", paste("Week", c(2, 4, 6, 8, 12, 16, 20, 24, 26)), "End of Treatment")))
+
+# build Tplyr table
+t_visit <- visit_df |>
+  left_join(v_week_df, by = "AVISITN") |>
+  tplyr_table(TRT01P) |>
+  set_pop_data(adsl) |>
+  set_pop_treat_var(TRT01P) |>
+  add_total_group() |>
+  add_layer(group_count(VISIT) |>
+              set_distinct_by(USUBJID) |>
+              set_format_strings(f_str('xx (xx%)', distinct_n, distinct_pct)))
+
+b_t_visit <- t_visit |>
+  build() |>
+  dplyr::select(
+    row_label1,
+    var1_Placebo,
+    `var1_Xanomeline High Dose`,
+    `var1_Xanomeline Low Dose`,
+    var1_Total
+  ) |>
+  add_column_headers(
+    paste0(
+      "|Placebo</br>(N=**Placebo**)",
+      "| Xanomeline High Dose</br>(N=**Xanomeline High Dose**) ",
+      "| Xanomeline Low Dose</br>(N=**Xanomeline Low Dose**) ",
+      "| Total</br>(N=**Total**) "
+    ),
+    header_n(t_visit)
+  )
+
+ht <- huxtable::as_hux(b_t_visit, add_colnames = FALSE) |>
+  huxtable::set_bold(1, 1:ncol(b_t_visit), TRUE) |>
+  huxtable::set_align(1, 1:ncol(b_t_visit), 'center') |>
+  huxtable::set_valign(1, 1:ncol(b_t_visit), 'bottom') |>
+  huxtable::set_bottom_border(1, 1:ncol(b_t_visit), 1) |>
+  huxtable::set_width(0.9) |>
+  huxtable::set_escape_contents(FALSE) |>
+  huxtable::set_col_width(c(.5, 1 / 8, 1 / 8, 1 / 8, 1 / 8)) |> 
+  huxtable::add_footnote("Table is based on participants within the ITT population")
+
+htmltools::HTML(huxtable::to_html(ht))
+
+```
